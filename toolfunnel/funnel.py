@@ -64,6 +64,26 @@ class FunnelConfig:
     # Hard cap: the funnel will never surface more than this many schemas.
     hard_cap: int = 14
 
+    # ---- adaptive budget -------------------------------------------------- #
+    # Treat ``max_tools``/``hard_cap`` as *ceilings*, not targets. When the
+    # candidate pool for the chosen domain+stage is small, surfacing fewer tools
+    # is strictly better -- every extra schema costs tokens and attention. When
+    # ``adaptive_budget`` is on, the funnel also trims the tail when the next
+    # ranked tool is much weaker than the best one.
+    adaptive_budget: bool = True
+    # Drop a tool whose score is below ``score_cutoff_ratio * top_score``.
+    score_cutoff_ratio: float = 0.15
+    # Budget expressed in *tokens* rather than tool count. When > 0 the funnel
+    # stops adding tools once the surfaced schema exceeds this many tokens,
+    # whichever comes first. 0 disables the token budget.
+    token_budget: int = 0
+    # Enable UCB exploration when consulting the chain graph.
+    chain_explore: bool = False
+    chain_epsilon: float = 0.15
+    # Only distil the chain graph automatically once it grows past this many
+    # edges (checked cheaply on each route; the work happens rarely).
+    auto_distill_edges: int = 20000
+
 
 @dataclass
 class Stats:
@@ -214,20 +234,16 @@ class Funnel:
         terms = tokenize(query)
         lexical = self.registry.bm25(terms) if terms else {}
         chain_scores: Dict[str, ChainStep] = {}
-        if last_tool:
-            for step in self.chain.successors(last_tool, limit=self.config.chain_width * 2):
-                chain_scores[step.tool] = step
-                self.stats.chain_hits += 1
-        # The most recent call in history also seeds the chain if last_tool
-        # was not passed explicitly.
-        elif history:
-            for step in self.chain.successors(history[-1].tool, limit=self.config.chain_width * 2):
-                chain_scores[step.tool] = step
+        source_tool = last_tool or (history[-1].tool if history else None)
+        if source_tool:
+            chain_scores = self._chain_successors(source_tool)
+            self.stats.chain_hits += len(chain_scores)
 
         candidates = self._gather_candidates(dom_names, stage, lexical, chain_scores)
         ranked = self._rank(candidates, lexical, chain_scores, primary, stage)
 
-        tools = [m for m in ranked if m.tool.domain in dom_names][: self.config.max_tools]
+        budget = self._tool_budget(ranked, dom_names)
+        tools = [m for m in ranked if m.tool.domain in dom_names][:budget]
         chosen = {m.name for m in tools}
 
         # Always keep the stage's own tools if we have room -- they are the
@@ -236,10 +252,23 @@ class Funnel:
             for t in self.registry.domain_tools(primary, stage):
                 if t.name in chosen:
                     continue
-                if len(tools) >= self.config.max_tools:
+                if len(tools) >= budget:
                     break
                 tools.append(ToolMatch(t, 0.9, "stage-default"))
                 chosen.add(t.name)
+
+        # Apply the adaptive score cutoff: the tail of low-signal fillers is
+        # pure token cost. Never drop below one tool, and never drop a
+        # stage-default (those are deliberate insurance).
+        if self.config.adaptive_budget and len(tools) > 1:
+            top = max(m.score for m in tools)
+            floor = top * self.config.score_cutoff_ratio
+            tools = [m for m in tools if m.score >= floor or m.reason == "stage-default"]
+
+        # Apply the token budget last: it is the hardest constraint and can
+        # only shrink the set further.
+        if self.config.token_budget > 0:
+            tools = self._trim_to_token_budget(tools, self.config.token_budget)
 
         # ---- Bridges: cross-domain reachability, not a hard wall ------ #
         bridge_names = self.gate.bridges_for(dom_names)
@@ -378,6 +407,51 @@ class Funnel:
                 out.append(t)
         return out
 
+    def _chain_successors(self, source_tool: str) -> Dict[str, ChainStep]:
+        """Consult the chain graph, optionally with exploration enabled."""
+        limit = self.config.chain_width * 2
+        if self.config.chain_explore:
+            steps = self.chain.explore(
+                source_tool, limit=limit, epsilon=self.config.chain_epsilon
+            )
+        else:
+            steps = self.chain.successors(source_tool, limit=limit)
+        return {s.tool: s for s in steps}
+
+    def _tool_budget(self, ranked: Sequence[ToolMatch], dom_names: Sequence[str]) -> int:
+        """How many tools to surface, treating ``max_tools`` as a ceiling.
+
+        When ``adaptive_budget`` is on, the effective budget is the number of
+        tools that actually exist in the chosen domain(s), capped by
+        ``max_tools``. This stops the funnel from padding a 3-tool stage up to 6
+        just because the ceiling is 6: those extra schemas cost tokens and
+        dilute the model's attention for no benefit.
+        """
+        ceiling = self.config.max_tools
+        if not self.config.adaptive_budget:
+            return ceiling
+        avail = sum(
+            1 for m in ranked if m.tool.domain in dom_names
+        )
+        return max(1, min(ceiling, avail))
+
+    def _trim_to_token_budget(
+        self, tools: Sequence[ToolMatch], budget: int
+    ) -> List[ToolMatch]:
+        """Keep the highest-ranked prefix whose schemas fit the token budget.
+
+        Always keeps at least one tool so the model is never left with nothing.
+        """
+        out: List[ToolMatch] = []
+        used = 0
+        for m in tools:
+            cost = m.tool.token_estimate()
+            if out and used + cost > budget:
+                break
+            out.append(m)
+            used += cost
+        return out
+
     def _stage_success_bias(self, tool: ToolSpec) -> float:
         if not tool.stage:
             return 0.0
@@ -474,6 +548,7 @@ class Funnel:
             "chain": self.chain.to_dict(),
             "gate": self.gate.export_state(),
             "stage_success": {f"{d}\x1f{s}": list(v) for (d, s), v in self._stage_success.items()},
+            "prefill_acceptance": self.prefiller.export_state(),
         }
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(payload, fh, ensure_ascii=False, indent=2)
@@ -484,11 +559,17 @@ class Funnel:
         with open(path, "r", encoding="utf-8") as fh:
             payload = json.load(fh)
         self.chain = ChainGraph.from_dict(payload.get("chain", {}))
+        self.chain.register_domains({t.name: t.domain for t in self.registry})
         self.gate.load_state(payload.get("gate", {}))
         self._stage_success = {
             tuple(k.split("\x1f")): (int(v[0]), int(v[1]))  # type: ignore[arg-type]
             for k, v in payload.get("stage_success", {}).items()
         }
+        self.prefiller.load_state(payload.get("prefill_acceptance", {}))
+
+    def distill(self, **kwargs: Any) -> Dict[str, int]:
+        """Prune the chain graph. See :meth:`ChainGraph.distill`."""
+        return self.chain.distill(**kwargs)
 
     def stats_dict(self) -> Dict[str, float]:
         d = self.stats.as_dict()

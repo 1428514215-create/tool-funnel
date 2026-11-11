@@ -34,6 +34,7 @@ from .adapters import (
 )
 from .chain import ChainEdge, ChainGraph, ChainStep
 from .compose import build_from_dict, load_document, loads, to_dict
+from .discovery import DiscoveredStage, discover_stages, merge_stages
 from .domains import DomainGate, DomainSpec
 from .funnel import Funnel, FunnelConfig, Stats
 from .learn import Learner, LearningReport, SessionRecord
@@ -50,7 +51,7 @@ from .types import (
     estimate_tokens,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "__version__",
@@ -79,6 +80,10 @@ __all__ = [
     "Learner",
     "SessionRecord",
     "LearningReport",
+    # stage discovery
+    "discover_stages",
+    "merge_stages",
+    "DiscoveredStage",
     # composition
     "build_from_dict",
     "load_document",
@@ -97,10 +102,26 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    # Lazily expose the optional semantic layer so importing it never requires
-    # an embedding provider.
-    if name in ("SemanticRanker", "make_openai_embedder", "cosine"):
+    # Lazily expose optional subsystems so importing toolfunnel never pulls in
+    # a network dependency (MCP sessions, embedders) or writes to disk.
+    if name in ("SemanticRanker", "make_openai_embedder", "cosine", "SemanticDomainGate"):
         from . import semantic
 
         return getattr(semantic, name)
+    if name in (
+        "MCPToolServer",
+        "MCPToolRunner",
+        "tool_specs_from_mcp",
+        "mcp_input_schema",
+        "merge_mcp_tools",
+        "normalize_mcp_result",
+        "ingest_mcp_servers",
+    ):
+        from . import mcp
+
+        return getattr(mcp, name)
+    if name in ("FunnelCache", "CacheInfo", "load_or_build"):
+        from . import cache
+
+        return getattr(cache, name)
     raise AttributeError(f"module 'toolfunnel' has no attribute {name!r}")

@@ -35,6 +35,18 @@ tool-funnel route  examples/compose.example.json "帮我查一下订单 12345"
 tool-funnel bench  examples/compose.example.json
 ```
 
+## 4. MCP 端到端 —— `mcp_demo.py`
+
+演示把一个 MCP server 的工具目录灌进漏斗、路由、调用回传、下一轮预填的完整
+闭环。**内置假 session，无需真实 server 或 API key**：
+
+```bash
+python examples/mcp_demo.py
+```
+
+换成真实 server 只需把 `FakeMCPSession` 替换成你的
+`mcp.client.session.ClientSession`（两者方法签名一致）。
+
 ## 看一个工具目录「长什么样」
 
 ```jsonc

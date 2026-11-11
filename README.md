@@ -4,10 +4,25 @@
 > 工具定义塞进每一轮对话。先用「业务域 → 阶段」把范围收窄到几个工具，再按
 > 「已调用工具」推荐下一步，并把参数预先填好。**调用越多，链路越准、越快。**
 
-[![tests](https://img.shields.io/badge/tests-58%20passing-brightgreen)](#测试)
+[![tests](https://img.shields.io/badge/tests-107%20passing-brightgreen)](#测试)
 [![python](https://img.shields.io/badge/python-3.8%2B-blue)](pyproject.toml)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![deps](https://img.shields.io/badge/runtime%20deps-0-orange)](#设计原则)
+
+**v0.2 新增（重点：MCP）**
+
+- 🔌 **MCP 适配器** —— 把一个或多个 MCP server 的工具目录直接灌进漏斗，
+  调用回传自动进入学习闭环。`order.search` 产出的 `orderId` 会落进上下文，
+  下一次 `order.get` 直接预填。支持同步/异步 session，零 `mcp` 依赖。
+- 📈 **自适应预算** —— `max_tools` 变成「天花板」而非目标，工具少时不硬凑；
+  支持按 token 预算收窄。
+- 🧠 **链路探索（bandit）** —— UCB 探索让偶发的更短链路有机会被发现，打破
+  「先入为主」。
+- 🪓 **链路蒸馏** —— 一键剪掉低权重边，长期运行也不会退化。
+- 💾 **冷启动缓存** —— 索引与学习状态落盘，冷启动省去重建。
+- 🔍 **阶段自动发现** —— 从历史调用序列聚类推断业务域的阶段，免手写。
+- 🧭 **语义域兜底** —— embedding 只兜住「一个触发词都没命中」的长尾查询。
+- ✅ **预填接受率学习** —— 记录预填值是否被采纳，好的来源上浮。
 
 ---
 
@@ -210,6 +225,9 @@ tool-funnel stats  compose.example.json       # 目录/业务域统计
 tool-funnel route  compose.example.json "查订单"  # 沿漏斗走一遍，看它怎么选
 tool-funnel bench  compose.example.json        # Token 节省基准
 tool-funnel learn  compose.example.json corpus.json --out learned.json
+tool-funnel discover-stages compose.example.json corpus.json  # 从会话推断阶段
+tool-funnel distill learned.json               # 蒸馏学习状态里的链路图
+tool-funnel mcp-import listing.json --server ecom  # 展平 MCP list_tools 结果
 ```
 
 ### 接入真实 Agent 循环
@@ -228,6 +246,56 @@ tools_payload = openai_tools_payload(route)   # 传给 client.chat.completions.c
 call = runner.call("order.search", {"keyword": "12345"})
 print(call.produced)   # 工具产出已写入上下文，链条与黑板都已更新
 ```
+
+---
+
+## MCP 接入（v0.2 重点）
+
+[MCP](https://modelcontextprotocol.io) 已经成为给 Agent 暴露工具的标准方式，
+而一个 MCP server 很容易发布几十上百个工具——正是本库要解决的场景。适配器
+**不引入 `mcp` 依赖**：你把 session 传进来，它按鸭子类型调用，因此官方
+`ClientSession`、测试用的假 session、手写 dict 都能用。
+
+```python
+import asyncio
+from toolfunnel import Funnel, DomainSpec
+from toolfunnel.mcp import MCPToolServer, MCPToolRunner, ingest_mcp_servers
+from mcp.client.session import ClientSession   # 真实场景
+
+async def main():
+    async with ClientSession(...) as session:      # 你的 MCP 连接
+        funnel = Funnel()
+        server = MCPToolServer("ecom", session=session, default_domain="misc",
+                               domain_hints={"order": "order", "ship": "logistics"})
+
+        # 1) 把 server 的工具目录灌进漏斗（内部会调用 list_tools）
+        n = await ingest_mcp_servers(funnel, [server])
+        print(f"ingested {n} tools")
+
+        # 2) 注册业务域触发词（MCP 不知道你的业务词汇，这一步由你补）
+        funnel.gate.add(DomainSpec("order", triggers=("订单", "order")))
+        funnel.gate.add(DomainSpec("logistics", triggers=("物流", "包裹")))
+
+        runner = MCPToolRunner(funnel, [server])
+
+        # 3) 每轮只把少数几个工具 schema 交给模型
+        payload = runner.tools_payload("帮我查订单 12345")   # 保留原始 inputSchema
+
+        # 4) 调用回传 → 自动记录链路 + 产出进上下文（供下一轮预填）
+        await runner.acall("order.search", {"keyword": "12345"})
+        # order.search 的 structuredContent 里的 orderId 已进入上下文，
+        # 下一轮 logistics.track / order.get 会被预填，无需再向模型要 id
+asyncio.run(main())
+```
+
+适配器做的事（不只是包一层）：
+
+- **展平 schema** 成漏斗的 `ToolSpec`，并从名字前缀猜测业务域（`order.search` → `order`）；
+- **保留原始 MCP `inputSchema`**，所以 `oneOf`、嵌套对象等复杂结构原样交给模型；
+- **把 `structuredContent` 的标量字段提到顶层**，这是预填端到端可用的关键；
+- **合并多个 server**，自动处理重名与命名空间（`server__tool`）。
+
+不想连真实 server 也能跑通全套：`python examples/mcp_demo.py`（用内置假 session）。
 
 ---
 
@@ -285,25 +353,30 @@ toolfunnel/
   types.py       工具/参数/会话黑板/路由结果的数据模型 + token 估算
   registry.py    工具注册表 + 倒排索引 + BM25（支撑上千工具的检索）
   domains.py     L1 业务域网关
-  stages.py      L2 阶段解析 + L4 参数预填
-  chain.py       L3 链路图（学习、衰减、推荐、序列化）
-  funnel.py      四层编排 + 运行时学习 + 逃生通道 + 持久化
+  stages.py      L2 阶段解析 + L4 参数预填（含预填接受率学习）
+  chain.py       L3 链路图（学习、衰减、推荐、UCB 探索、蒸馏、序列化）
+  funnel.py      四层编排 + 自适应预算 + 运行时学习 + 逃生通道 + 持久化
   learn.py       离线批量学习（链路重建、触发词挖掘）
-  semantic.py    可选的 embedding 重排（只对候选短名单）
+  discovery.py   阶段自动发现（从调用序列聚类推断业务域的阶段）
+  semantic.py    可选的 embedding 重排 + 语义域兜底
+  mcp.py         MCP 适配器（工具目录灌入 + 执行回传 + 学习闭环）
+  cache.py       冷启动缓存（索引 + 学习状态落盘）
   adapters.py    OpenAI / Anthropic / 通用 ToolRunner 适配
   compose.py     声明式目录（JSON/YAML/DSL）加载与导出
-  cli.py         命令行入口
-examples/        1000 工具合成目录生成器 + 端到端演示
-benchmarks/      Token 节省与链路预测基准
-tests/           58 个单元测试
+  cli.py         命令行入口（stats/route/bench/learn/discover-stages/distill/mcp-import）
+examples/        1000 工具合成目录生成器 + 端到端演示 + MCP 演示
+benchmarks/      Token 节省、链路预测与规模扫描基准
+tests/           107 个单元测试
 ```
 
 ## 测试
 
 ```bash
-python -m pytest -q          # 58 passed
-python examples/demo.py      # 端到端演示（无需 API key）
-python benchmarks/bench.py   # 复现上面的基准数字
+python -m pytest -q             # 107 passed
+python examples/demo.py         # 端到端演示（无需 API key）
+python examples/mcp_demo.py     # MCP 端到端演示（内置假 session，无需 server）
+python benchmarks/bench.py      # 复现基准数字
+python benchmarks/sweep.py      # 扫不同工具规模的收益曲线
 ```
 
 ## 参与贡献
@@ -347,6 +420,26 @@ funnel = Funnel.from_tools(tools, domains=[DomainSpec("order", triggers=("order"
 result = funnel.route("where is order 12345?")
 schemas = result.schemas()          # hand these to your chat completion call
 ```
+
+**MCP (v0.2).** Plug any MCP server's tool catalog straight into the funnel and
+let calls feed the learning loop — no `mcp` dependency, works with the official
+client's async session or a sync/embedded one:
+
+```python
+from toolfunnel.mcp import MCPToolServer, MCPToolRunner, ingest_mcp_servers
+
+await ingest_mcp_servers(funnel, [MCPToolServer("ecom", session=session)])
+runner = MCPToolRunner(funnel, [server])
+payload = runner.tools_payload("find order 12345")   # only a few schemas
+await runner.acall("order.search", {"keyword": "12345"})
+# structuredContent scalars land on the blackboard, so the next call is
+# pre-filled instead of round-tripping to the model for an id it just produced.
+```
+
+Also in v0.2: adaptive tool budget (ceilings, not targets), UCB exploration and
+one-call distillation for the chain graph, on-disk cold-start cache, workflow
+**stage auto-discovery** from call sequences, an embedding fallback for the
+domain gate, and pre-fill acceptance learning.
 
 Runtime dependencies: **none** (Python 3.8+). Optional extras: `openai`,
 `PyYAML`, `tiktoken`. See `examples/` and `benchmarks/` for runnable demos.

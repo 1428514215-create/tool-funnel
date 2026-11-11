@@ -142,10 +142,69 @@ class PreFiller:
 
     The result separately reports ``missing_required`` so the caller can decide
     whether to ask the model or to short-circuit.
+
+    **Learning the good sources.** When the funnel pre-fills a parameter and the
+    model then *keeps* or *changes* that value, that outcome is a signal: a
+    source (``context:order_id``, ``literal-default``, ...) whose values are
+    usually accepted should be preferred, and one that is usually overridden is
+    worse than useless. :meth:`observe_outcome` records these outcomes per
+    ``(param, source)`` and :meth:`_lookup` consults the running acceptance rate
+    to break ties between equally-specific candidates.
     """
 
     def __init__(self, *, use_produces: bool = True) -> None:
         self.use_produces = use_produces
+        # (tool_or_param, source) -> [accepted, total]
+        self._acceptance: Dict[Tuple[str, str], List[int]] = {}
+        self.min_observations = 3
+
+    # ---- learning --------------------------------------------------------- #
+    def observe_outcome(
+        self,
+        tool: str,
+        param: str,
+        source: str,
+        *,
+        accepted: bool,
+    ) -> None:
+        """Record whether a pre-filled value survived contact with the model.
+
+        ``accepted`` is True when the model used the suggested value (or left it
+        untouched) and False when it supplied a different one.
+        """
+        if not source:
+            return
+        key = (f"{tool}.{param}", source)
+        bucket = self._acceptance.setdefault(key, [0, 0])
+        bucket[0] += int(accepted)
+        bucket[1] += 1
+
+    def acceptance_rate(self, tool: str, param: str, source: str) -> Optional[float]:
+        bucket = self._acceptance.get((f"{tool}.{param}", source))
+        if not bucket or bucket[1] < self.min_observations:
+            return None
+        return bucket[0] / bucket[1]
+
+    def export_state(self) -> Dict[str, List[int]]:
+        """JSON-safe form: ``"tool.param\x1fsource" -> [accepted, total]``."""
+        return {f"{k[0]}\x1f{k[1]}": list(v) for k, v in self._acceptance.items()}
+
+    def load_state(self, state: Dict[str, Any]) -> None:
+        self._acceptance = {
+            tuple(k.split("\x1f", 1)): [int(v[0]), int(v[1])]  # type: ignore[arg-type]
+            for k, v in dict(state or {}).items()
+        }
+
+    def _source_bias(self, tool_name: str, param: str, source: str) -> float:
+        """A small tie-break bonus/penalty from the acceptance history.
+
+        Bounded to +/-0.25 so it can only reorder close candidates -- it must
+        never override an explicit context value with a "learned" one.
+        """
+        rate = self.acceptance_rate(tool_name, param, source)
+        if rate is None:
+            return 0.0
+        return (rate - 0.5) * 0.5
 
     def fill(
         self,
@@ -154,6 +213,7 @@ class PreFiller:
         *,
         context: Optional[SessionContext] = None,
         prior_tools: Sequence[ToolSpec] = (),
+        learned: bool = True,
     ) -> PrefillResult:
         given = dict(given or {})
         ctx = context or SessionContext()
@@ -170,7 +230,9 @@ class PreFiller:
         for pname, spec in tool.params.items():
             if pname in args and args[pname] not in (None, ""):
                 continue
-            value, why = self._lookup(pname, spec, ctx, produced_keys)
+            value, why = self._lookup(
+                tool.name, pname, spec, ctx, produced_keys, learned=learned
+            )
             if value is not None:
                 args[pname] = value
                 filled[pname] = why
@@ -181,23 +243,40 @@ class PreFiller:
 
     def _lookup(
         self,
+        tool_name: str,
         pname: str,
         spec: ParamSpec,
         ctx: SessionContext,
         produced_keys: Dict[str, str],
+        *,
+        learned: bool = True,
     ) -> Tuple[Any, str]:
+        # Collect every candidate source with a specificity rank. Higher rank =
+        # more authoritative. Learning only perturbs within a rank band, so an
+        # explicit context value can never lose to a learned default.
+        candidates: List[Tuple[int, Any, str]] = []
         if pname in ctx:
-            return ctx[pname], f"context:{pname}"
+            candidates.append((5, ctx[pname], f"context:{pname}"))
         for alias in spec.aliases:
             if alias in ctx:
-                return ctx[alias], f"context:{alias}->{pname}"
+                candidates.append((4, ctx[alias], f"context:{alias}->{pname}"))
         if spec.source == "literal" and spec.default is not None:
-            return spec.default, "literal-default"
+            candidates.append((3, spec.default, "literal-default"))
         if spec.default is not None and spec.source != "literal":
-            # A context param that also declares a default is a soft default.
-            return spec.default, "default"
-        if pname in produced_keys:
-            producer = produced_keys[pname]
-            if pname in ctx:
-                return ctx[pname], f"produced-by:{producer}"
-        return None, ""
+            candidates.append((2, spec.default, "default"))
+        if pname in produced_keys and pname in ctx:
+            candidates.append((1, ctx[pname], f"produced-by:{produced_keys[pname]}"))
+
+        if not candidates:
+            return None, ""
+
+        if learned:
+            def key(c: Tuple[int, Any, str]) -> Tuple[int, float]:
+                rank, _value, source = c
+                return (rank, self._source_bias(tool_name, pname, source))
+            candidates.sort(key=key, reverse=True)
+        else:
+            candidates.sort(key=lambda c: c[0], reverse=True)
+
+        _rank, value, source = candidates[0]
+        return value, source

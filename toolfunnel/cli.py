@@ -4,6 +4,9 @@
     tool-funnel route    FILE.json "..."  # route one query, show the funnel
     tool-funnel bench    FILE.json        # token-savings benchmark
     tool-funnel learn    FILE.json SPEC   # learn from a session corpus
+    tool-funnel discover-stages FILE.json SPEC   # infer stages from sessions
+    tool-funnel distill  LEARNED.json     # prune a learned state's chain graph
+    tool-funnel mcp-import LISTING.json   # flatten an MCP list_tools result
 
 The ``FILE`` is a compose document (see :mod:`toolfunnel.compose`).
 """
@@ -151,7 +154,118 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("corpus")
     s.add_argument("--out", help="where to write learned state JSON")
     s.set_defaults(func=cmd_learn)
+
+    s = sub.add_parser(
+        "discover-stages",
+        help="infer workflow stages from a session corpus and print stage specs",
+    )
+    s.add_argument("file")
+    s.add_argument("corpus")
+    s.add_argument("--min-support", type=int, default=3)
+    s.add_argument("--k", type=int, default=0, help="fixed phase count (0 = auto)")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_discover_stages)
+
+    s = sub.add_parser("distill", help="prune a learned-state file's chain graph")
+    s.add_argument("learned", help="learned-state JSON produced by `learn --out`")
+    s.add_argument("--min-weight", type=float, default=0.5)
+    s.add_argument("--keep-per-source", type=int, default=8)
+    s.add_argument("--out", help="where to write the pruned state")
+    s.set_defaults(func=cmd_distill)
+
+    s = sub.add_parser("mcp-import", help="inspect/flatten an MCP list_tools JSON file")
+    s.add_argument("listing", help="a JSON file containing an MCP list_tools result")
+    s.add_argument("--server", default="mcp", help="server name used for namespacing")
+    s.add_argument("--namespace", action="store_true")
+    s.add_argument("--json", action="store_true", help="emit a compose document")
+    s.set_defaults(func=cmd_mcp_import)
     return p
+
+
+def cmd_discover_stages(args: argparse.Namespace) -> int:
+    """Infer stages from a corpus and print them as copy-pasteable specs."""
+    from .discovery import discover_stages
+
+    funnel = _load(args.file)
+    with open(args.corpus, "r", encoding="utf-8") as fh:
+        raw = json.load(fh)
+    sessions = [
+        [ToolCall(tool=c["tool"], ok=c.get("ok", True)) for c in s.get("calls", [])]
+        for s in raw
+    ]
+    domain_of = {t.name: t.domain for t in funnel.registry}
+    stages = discover_stages(
+        sessions, domain_of=domain_of, min_support=args.min_support,
+        k=(args.k or None),
+    )
+    if args.json:
+        print(json.dumps(
+            [{"name": s.name, "domain": s.domain, "position": s.position,
+              "triggers": list(s.triggers), "tools": s.tools,
+              "confidence": s.confidence, "support": s.support} for s in stages],
+            ensure_ascii=False, indent=2))
+        return 0
+    if not stages:
+        print("no stages discovered (not enough session data)")
+        return 0
+    print(f"discovered {len(stages)} stages from {len(sessions)} sessions:\n")
+    for s in stages:
+        print(f"  {s.domain}/{s.name}  (pos={s.position:.2f} "
+              f"conf={s.confidence:.2f} support={s.support})")
+        print(f"    triggers: {', '.join(s.triggers) or '-'}")
+        print(f"    tools:    {', '.join(s.tools[:4])}"
+              + (" ..." if len(s.tools) > 4 else ""))
+    print("\nadd to a compose document's \"stages\" array (use --json to emit):")
+    print(json.dumps([{"name": s.name, "domain": s.domain, "order": i,
+                       "triggers": list(s.triggers)}
+                      for i, s in enumerate(stages)], ensure_ascii=False))
+    return 0
+
+
+def cmd_distill(args: argparse.Namespace) -> int:
+    from .chain import ChainGraph
+
+    with open(args.learned, "r", encoding="utf-8") as fh:
+        payload = json.load(fh)
+    graph = ChainGraph.from_dict(payload.get("chain", {}))
+    report = graph.distill(
+        min_weight=args.min_weight, keep_per_source=args.keep_per_source
+    )
+    payload["chain"] = graph.to_dict()
+    out = args.out or args.learned
+    with open(out, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, ensure_ascii=False, indent=2)
+    print(f"chain distilled -> {out}")
+    print(f"  edges {report['edges_before']} -> {report['edges_after']} "
+          f"(removed {report['removed']}, capped {report['capped']})")
+    return 0
+
+
+def cmd_mcp_import(args: argparse.Namespace) -> int:
+    """Flatten an MCP listing into a funnel compose document."""
+    from .compose import to_dict
+    from .funnel import Funnel
+    from .mcp import MCPToolServer, tool_specs_from_mcp
+    from .registry import ToolRegistry
+
+    with open(args.listing, "r", encoding="utf-8") as fh:
+        listing = json.load(fh)
+    server = MCPToolServer(args.server, session=None, namespace=args.namespace)
+    specs = tool_specs_from_mcp(listing, server=server)
+    if args.json:
+        funnel = Funnel(registry=ToolRegistry(specs))
+        print(json.dumps(to_dict(funnel), ensure_ascii=False, indent=2))
+        return 0
+    print(f"flattened {len(specs)} MCP tools from server {args.server!r}:")
+    by_domain: dict = {}
+    for s in specs:
+        by_domain.setdefault(s.domain, []).append(s.name)
+    for dom, names in sorted(by_domain.items()):
+        print(f"  {dom}: {len(names)} tools")
+        for n in names[:3]:
+            print(f"    - {n}")
+    print("\nre-run with --json to emit a compose document")
+    return 0
 
 
 def main(argv: Optional[List[str]] = None) -> int:

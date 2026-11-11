@@ -24,4 +24,5 @@ htmlcov/
 
 # Generated artifacts
 examples/catalog.json
+benchmarks/sweep.json
 learned.json

@@ -11,6 +11,7 @@ Adding a tool is cheap; the indexes are rebuilt lazily via :meth:`finalize`.
 
 from __future__ import annotations
 
+import hashlib
 import math
 import re
 from collections import defaultdict
@@ -228,7 +229,54 @@ class ToolRegistry:
         )
         return tokenize(blob)
 
-    # ---- arc / stats helpers --------------------------------------------- #
+    # ---- index serialization (cold-start cache) --------------------------- #
+    def index_signature(self) -> str:
+        """A cheap fingerprint of the tool set, used to validate a cache.
+
+        Two registries with the same signature have identical tools and so can
+        share a serialized index. Combines each tool's own fingerprint with the
+        catalog size.
+        """
+        h = hashlib.sha1()
+        h.update(str(len(self._tools)).encode())
+        for name in sorted(self._tools):
+            h.update(name.encode())
+            h.update(self._tools[name].fingerprint().encode())
+        return h.hexdigest()
+
+    def export_index(self) -> Dict[str, object]:
+        """Serialise the built index so a fresh process can skip rebuilding it.
+
+        The index (inverted postings, document lengths) is derived purely from
+        the tools, so it can be cached to disk and reloaded. The *tools*
+        themselves are serialised by ``compose.to_dict``; here we only store the
+        derived structures plus a signature to detect staleness.
+        """
+        return {
+            "version": 1,
+            "signature": self.index_signature(),
+            "inverted": {term: dict(post) for term, post in self._inverted.items()},
+            "df": dict(self._df),
+            "terms": {k: list(v) for k, v in self._terms.items()},
+            "doc_len": dict(self._doc_len),
+        }
+
+    def load_index(self, data: Dict[str, object], *, verify: bool = True) -> bool:
+        """Restore a serialized index. Returns False if it is stale/mismatched."""
+        if verify and data.get("signature") != self.index_signature():
+            return False
+        inverted = data.get("inverted")
+        if not isinstance(inverted, dict):
+            return False
+        self._inverted = defaultdict(dict)
+        for term, post in inverted.items():
+            self._inverted[term] = dict(post)  # type: ignore[arg-type]
+        self._df = defaultdict(int, {k: int(v) for k, v in dict(data.get("df", {})).items()})  # type: ignore[arg-type]
+        self._terms = {k: list(v) for k, v in dict(data.get("terms", {})).items()}  # type: ignore[arg-type]
+        self._doc_len = {k: int(v) for k, v in dict(data.get("doc_len", {})).items()}  # type: ignore[arg-type]
+        return True
+
+    # ---- stats helpers ---------------------------------------------------- #
     def stats(self) -> Dict[str, object]:
         return {
             "tools": len(self._tools),
