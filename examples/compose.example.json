@@ -1,0 +1,97 @@
+{
+  "config": {
+    "top_domains": 2,
+    "max_tools": 6,
+    "max_bridges": 3,
+    "chain_width": 4
+  },
+  "domains": [
+    {
+      "name": "order",
+      "description": "订单业务域",
+      "triggers": ["订单", "order", "查订单", "单据", "交易"],
+      "bridges": ["logistics", "after_sales", "finance"],
+      "prior": 1.2
+    },
+    {
+      "name": "logistics",
+      "description": "物流业务域",
+      "triggers": ["物流", "快递", "运单", "轨迹", "到哪"],
+      "bridges": ["order", "inventory"],
+      "prior": 1.1
+    },
+    {
+      "name": "after_sales",
+      "description": "售后业务域",
+      "triggers": ["售后", "退款", "退货", "换货", "客诉", "工单"],
+      "bridges": ["order", "finance", "crm"],
+      "prior": 1.1
+    }
+  ],
+  "stages": [
+    { "name": "locate", "domain": "order", "order": 0, "triggers": ["查", "搜索", "找"] },
+    { "name": "inspect", "domain": "order", "order": 1, "triggers": ["详情", "状态", "看"] },
+    { "name": "mutate", "domain": "order", "order": 2, "triggers": ["改", "取消", "确认"] },
+    { "name": "track", "domain": "logistics", "order": 0, "triggers": ["物流", "轨迹"] },
+    { "name": "refund", "domain": "after_sales", "order": 2, "triggers": ["退款", "赔付"] }
+  ],
+  "tools": [
+    {
+      "name": "order.search",
+      "domain": "order",
+      "stage": "locate",
+      "description": "按关键字搜索订单，返回订单列表与订单号",
+      "keywords": ["订单", "搜索", "order"],
+      "produces": ["order_id"],
+      "next_hint": ["order.get"],
+      "params": [
+        { "name": "keyword", "type": "string", "required": true, "description": "搜索关键字" }
+      ]
+    },
+    {
+      "name": "order.get",
+      "domain": "order",
+      "stage": "inspect",
+      "description": "按订单号查看订单详情",
+      "keywords": ["订单", "详情", "order"],
+      "requires": ["order_id"],
+      "produces": ["order_status"],
+      "next_hint": ["shipment.track"],
+      "params": [
+        {
+          "name": "order_id",
+          "type": "string",
+          "required": true,
+          "aliases": ["id"],
+          "description": "订单号"
+        }
+      ]
+    },
+    {
+      "name": "shipment.track",
+      "domain": "logistics",
+      "stage": "track",
+      "description": "跟踪物流轨迹",
+      "keywords": ["物流", "轨迹", "快递"],
+      "requires": ["order_id"],
+      "bridges": ["order"],
+      "params": [
+        { "name": "order_id", "type": "string", "required": true, "aliases": ["id"] }
+      ]
+    },
+    {
+      "name": "refund.create",
+      "domain": "after_sales",
+      "stage": "refund",
+      "description": "为订单创建退款单",
+      "keywords": ["退款", "售后", "refund"],
+      "requires": ["order_id"],
+      "produces": ["refund_id"],
+      "dangerous": true,
+      "params": [
+        { "name": "order_id", "type": "string", "required": true, "aliases": ["id"] },
+        { "name": "amount", "type": "string", "source": "literal", "default": "full" }
+      ]
+    }
+  ]
+}
