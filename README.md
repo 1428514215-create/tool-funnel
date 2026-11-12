@@ -4,7 +4,7 @@
 > 工具定义塞进每一轮对话。先用「业务域 → 阶段」把范围收窄到几个工具，再按
 > 「已调用工具」推荐下一步，并把参数预先填好。**调用越多，链路越准、越快。**
 
-[![tests](https://img.shields.io/badge/tests-114%20passing-brightgreen)](#测试)
+[![tests](https://img.shields.io/badge/tests-136%20passing-brightgreen)](#测试)
 [![python](https://img.shields.io/badge/python-3.8%2B-blue)](pyproject.toml)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![deps](https://img.shields.io/badge/runtime%20deps-0-orange)](#设计原则)
@@ -14,6 +14,9 @@
 - 🔌 **MCP 适配器** —— 把一个或多个 MCP server 的工具目录直接灌进漏斗，
   调用回传自动进入学习闭环。`order.search` 产出的 `orderId` 会落进上下文，
   下一次 `order.get` 直接预填。支持同步/异步 session，零 `mcp` 依赖。
+- 🪄 **自动索引（v0.3）** —— 扔进一堆**原始工具**（MCP 列表 / OpenAPI / 一串名字），
+  自动推断业务域、阶段、链路、触发词，直接产出可路由的目录。**不用手写配置**，
+  自由任务/无边界任务也能立刻用起来。
 - 📈 **自适应预算** —— `max_tools` 变成「天花板」而非目标，工具少时不硬凑；
   支持按 token 预算收窄。
 - 🧠 **链路探索（bandit）** —— UCB 探索让偶发的更短链路有机会被发现，打破
@@ -23,6 +26,59 @@
 - 🔍 **阶段自动发现** —— 从历史调用序列聚类推断业务域的阶段，免手写。
 - 🧭 **语义域兜底** —— embedding 只兜住「一个触发词都没命中」的长尾查询。
 - ✅ **预填接受率学习** —— 记录预填值是否被采纳，好的来源上浮。
+
+---
+
+## 落地即用：扔进工具，自动建好路由（v0.3）
+
+前面的四层漏斗需要一个「已经划分好」的工具目录。现实里你往往只有**一堆工具**：
+一个 MCP server 发布的上百个工具、一份 OpenAPI、某个框架的注册表。**自动索引器**
+就是把 codebase-memory 对代码库做的事搬到工具集上——**扫一遍，推断结构，交回一个
+已经能路由的漏斗**，并把推断结果写成一份普通目录文件，你可以看、可以改、可以版本管理。
+
+```bash
+# 三种输入，同一条流水线，不需要写任何配置
+tool-funnel index my_mcp_listing.json --out indexed.json   # MCP list_tools 结果
+tool-funnel index openapi.json        --out indexed.json   # OpenAPI 文档
+tool-funnel index tool_names.json     --out indexed.json   # 就一串工具名
+tool-funnel route indexed.json "帮我查一下订单"             # 立刻可用
+```
+
+Python 里一行：
+
+```python
+from toolfunnel.index import index_tools, tools_from_openapi
+
+funnel, report = index_tools(tools_from_openapi(openapi_doc))
+print(report.summary())
+# indexed 8 tools into 4 domains (order, shipment, refund, general); 14 stages; ...
+result = funnel.route("客户申请退款")     # 直接路由，已经学会 order/refund/shipment
+```
+
+它会自动推断四件事，**每一条都写进输出文件**（可解释、可覆盖）：
+
+| 推断项 | 依据 |
+| --- | --- |
+| **业务域** | 工具名/描述的词频相似度聚类（可选 embedding）；名字前缀是最强信号 |
+| **阶段** | 从名字里的**动词**映射：search/list → 定位，get → 查看，create/update → 变更，verify → 核对 |
+| **链路（next_hint）** | 同域内「读」类工具 → 指向共享同一对象的「写/核对」类工具 |
+| **触发词** | 从各域自己的工具里挖「对外独有」的对象词（用 IDF 抑制套话），层 1 立刻能命中 |
+
+**自由任务 / 无边界任务**：漏斗从不假设任务只属于一个域。当没有触发词命中时，
+桥接工具与 `expand()` 仍然可用；索引器还会把**没能清晰归类的工具**统一放进
+`general` 域，所以「随便看看」类的查询也有地方落，而不是拿到空集。
+
+**可选让模型帮忙命名**（纯粹锦上添花，不配也能跑）：
+
+```python
+def namer(tool_names, descriptions):
+    return "售后处理"           # 给这一簇工具起个业务域名
+
+funnel, report = index_tools(raw_tools, llm_namer=namer)
+```
+
+在 1000 个真实结构的合成工具上：**索引耗时约 0.7 秒**，推断出 8 个业务域，
+与真实划分的**纯度约 89%**，5 个典型查询里 4 个能靠挖出的触发词直接命中。
 
 ---
 
@@ -252,6 +308,7 @@ funnel = build_from_dict(load_document("compose.example.json"))
 ### 命令行
 
 ```bash
+tool-funnel index  my_tools.json --out indexed.json  # 自动索引原始工具
 tool-funnel demo                               # 内置示例，直接看效果
 tool-funnel catalog --tools 1000 --out c.json  # 生成合成目录
 tool-funnel stats  c.json                       # 目录/业务域统计
@@ -392,20 +449,21 @@ toolfunnel/
   chain.py       L3 链路图（学习、衰减、推荐、UCB 探索、蒸馏、序列化）
   funnel.py      四层编排 + 自适应预算 + 运行时学习 + 逃生通道 + 持久化
   learn.py       离线批量学习（链路重建、触发词挖掘）
+  index.py       ★ 自动索引：原始工具 → 业务域/阶段/链路/触发词
   discovery.py   阶段自动发现（从调用序列聚类推断业务域的阶段）
   semantic.py    可选的 embedding 重排 + 语义域兜底
   mcp.py         MCP 适配器（工具目录灌入 + 执行回传 + 学习闭环）
   cache.py       冷启动缓存（索引 + 学习状态落盘）
   adapters.py    OpenAI / Anthropic / 通用 ToolRunner 适配
   compose.py     声明式目录（JSON/YAML/DSL）加载与导出
-  cli.py         命令行入口（demo/catalog/stats/route/bench/learn/discover-stages/distill/mcp-import）
+  cli.py         命令行入口（index/demo/catalog/stats/route/bench/learn/discover-stages/distill/mcp-import）
   __main__.py    `python -m toolfunnel` 入口
   data/          随包分发的示例目录（wheel 与 zipapp 都能读到）
 tools/
   build_zipapp.py  构建单文件 tool-funnel.pyz
-examples/        1000 工具合成目录生成器 + 端到端演示 + MCP 演示
+examples/        1000 工具合成目录生成器 + 端到端演示 + MCP 演示 + 自动索引演示
 benchmarks/      Token 节省、链路预测与规模扫描基准
-tests/           114 个单元测试
+tests/           136 个单元测试
 install.sh       一键安装 / 构建 .pyz
 INSTALL.md       下载与安装指南
 ```
@@ -413,7 +471,7 @@ INSTALL.md       下载与安装指南
 ## 测试
 
 ```bash
-python -m pytest -q             # 114 passed
+python -m pytest -q             # 136 passed
 python examples/demo.py         # 端到端演示（无需 API key）
 python examples/mcp_demo.py     # MCP 端到端演示（内置假 session，无需 server）
 python benchmarks/bench.py      # 复现基准数字
@@ -480,6 +538,26 @@ await runner.acall("order.search", {"keyword": "12345"})
 # structuredContent scalars land on the blackboard, so the next call is
 # pre-filled instead of round-tripping to the model for an id it just produced.
 ```
+
+**Auto-indexing (v0.3).** Hand it a raw pile of tools — an MCP listing, an
+OpenAPI document, or just a list of names — and it infers the domains, stages,
+chains and triggers and returns a router that already works, with every guess
+written into an ordinary, editable compose document:
+
+```bash
+tool-funnel index my_tools.json --out indexed.json
+tool-funnel route indexed.json "find order 12345"
+```
+
+```python
+from toolfunnel.index import index_tools
+funnel, report = index_tools(raw_tools)      # no config to hand-write
+print(report.summary())
+```
+
+Unclustered tools land in a catch-all `general` domain, so free-form / unbounded
+tasks always have somewhere to go. An optional `llm_namer` hook lets a model
+name the clusters — it works fully offline without one.
 
 Also in v0.2: adaptive tool budget (ceilings, not targets), UCB exploration and
 one-call distillation for the chain graph, on-disk cold-start cache, workflow

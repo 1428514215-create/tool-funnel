@@ -4,6 +4,54 @@ All notable changes to this project are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-11-12
+
+The "drop in your tools and go" release: an **auto-indexer** that turns a raw
+pile of tools into a ready-to-route funnel, so the library no longer requires a
+hand-written catalog to be useful. This is the codebase-memory move applied to
+tool sets.
+
+### Added
+
+- **Auto-indexing (`toolfunnel.index`)** — infer the whole routing structure
+  from raw tools, with every guess explainable and overridable:
+  - `index_tools(tools)` → a ready-to-route `Funnel` + an `IndexReport`;
+    `index_and_dump(tools)` → also the inferred compose document.
+  - **Domain inference** decides business domains by TF-IDF cosine clustering
+    over names/descriptions, with the **name prefix treated as a strong signal**
+    (``order.search``/``order.get`` group even with no shared description words).
+    An optional ``embedder`` swaps in embedding-based clustering and falls back
+    to TF-IDF automatically if it raises.
+  - **Stage inference** maps the *verb* in a tool name to a workflow phase
+    (search/list → locate, get → inspect, create/update/cancel → mutate,
+    verify/audit → check), in both English and Chinese.
+  - **Chain inference** links read-like tools to the write/verify tools that
+    share their object, seeding ``next_hint`` from structure alone.
+  - **Trigger mining** derives each domain's layer-1 triggers from its own
+    tools, using *outside-domain* IDF to suppress boilerplate ("支持精确匹配")
+    while keeping defining vocabulary ("订单"); works even for single-domain
+    catalogs.
+  - **Bridges** are inferred from cross-domain vocabulary overlap.
+  - **Free-form / unbounded tasks**: tools that do not cluster confidently are
+    collected into a catch-all ``general`` domain, so an open-ended query always
+    has somewhere to land instead of an empty candidate set.
+  - Optional ``llm_namer`` hook lets a model name clusters; a broken or absent
+    namer degrades to offline naming, never breaking the index.
+- **Input adapters**: `tools_from_openapi` (OpenAPI/Swagger operations, with
+  parameters preserved for pre-fill), `tools_from_names` (bare names — the
+  minimum possible input), and MCP listings via the existing adapter.
+- **CLI `index` command** that sniffs the input shape (MCP / OpenAPI / names)
+  and writes an indexed compose document.
+- `examples/autoindex_demo.py` — all three input shapes → inferred config →
+  routing, end to end, offline.
+- 22 tests for indexing (determinism, known-catalog recovery, boilerplate
+  suppression, catch-all behaviour, embedder/LLM fallbacks, a scale guard).
+
+### Fixed
+
+- The previous clustering was O(n³) and took ~20 s for 200 tools; it is now
+  sparse-candidate union-find, indexing 1000 tools in ~0.7 s and 2000 in ~1.4 s.
+
 ## [0.2.1] - 2026-11-12
 
 The "download and use it" release: no functional changes to routing, purely

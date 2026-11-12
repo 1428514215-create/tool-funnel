@@ -51,7 +51,7 @@ from .types import (
     estimate_tokens,
 )
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 
 __all__ = [
     "__version__",
@@ -124,4 +124,17 @@ def __getattr__(name: str):
         from . import cache
 
         return getattr(cache, name)
+    if name in (
+        "RawTool",
+        "IndexReport",
+        "index_tools",
+        "index_and_dump",
+        "infer_specs",
+        "tools_from_names",
+        "tools_from_openapi",
+        "VERB_GROUPS",
+    ):
+        from . import index
+
+        return getattr(index, name)
     raise AttributeError(f"module 'toolfunnel' has no attribute {name!r}")

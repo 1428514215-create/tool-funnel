@@ -1,5 +1,6 @@
 """Command-line interface for tool-funnel.
 
+    tool-funnel index   SOURCE.json      # auto-index raw tools -> compose doc
     tool-funnel demo                     # self-contained demo on bundled catalog
     tool-funnel stats    FILE.json        # catalog + routing stats
     tool-funnel route    FILE.json "..."  # route one query, show the funnel
@@ -8,6 +9,7 @@
     tool-funnel discover-stages FILE.json SPEC   # infer stages from sessions
     tool-funnel distill  LEARNED.json     # prune a learned state's chain graph
     tool-funnel mcp-import LISTING.json   # flatten an MCP list_tools result
+    tool-funnel catalog                   # generate a synthetic catalog
 
 The ``FILE`` is a compose document (see :mod:`toolfunnel.compose`).
 """
@@ -225,6 +227,20 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--tools", type=int, default=1000)
     s.add_argument("--out", help="output path (default: catalog.json)")
     s.set_defaults(func=cmd_catalog)
+
+    s = sub.add_parser(
+        "index",
+        help="auto-index raw tools (MCP / OpenAPI / names) into a compose document",
+    )
+    s.add_argument("source", help="MCP list_tools JSON, OpenAPI JSON, or a JSON list of names")
+    s.add_argument("--out", help="output compose document (default: indexed.json)")
+    s.add_argument("--server", default="mcp", help="server name for MCP input")
+    s.add_argument("--threshold", type=float, default=0.30,
+                   help="cluster similarity threshold (lower = fewer, broader domains)")
+    s.add_argument("--max-domains", type=int, default=24)
+    s.add_argument("--explain", action="store_true", help="print sample tool assignments")
+    s.add_argument("--query", default="帮我查一下订单", help="example query shown at the end")
+    s.set_defaults(func=cmd_index)
     return p
 
 
@@ -345,6 +361,68 @@ def cmd_catalog(args: argparse.Namespace) -> int:
     print(f"wrote {out}: {len(doc['tools'])} tools, "
           f"{len(doc['domains'])} domains, {len(doc['stages'])} stages")
     print(f"try it:  tool-funnel route {out} \"帮我查一下订单\"")
+    return 0
+
+
+def cmd_index(args: argparse.Namespace) -> int:
+    """Auto-index a raw tool source into a ready-to-use compose document.
+
+    This is the "drop in your tools and go" path: point it at an MCP
+    ``list_tools`` JSON file, an OpenAPI document, or a plain list of tool names,
+    and it infers domains / stages / chains and writes a standard compose
+    document you can route with immediately (or hand-edit first).
+    """
+    from .index import RawTool, index_and_dump, tools_from_names, tools_from_openapi
+
+    with open(args.source, "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+
+    # Sniff the input shape so the user does not have to say which it is.
+    if isinstance(data, dict) and "paths" in data:
+        raws = tools_from_openapi(data)
+        kind = "openapi"
+    elif isinstance(data, dict) and "tools" in data:
+        from .mcp import MCPToolServer, tool_specs_from_mcp
+
+        specs = tool_specs_from_mcp(data, server=MCPToolServer(args.server, session=None))
+        raws = [
+            RawTool(s.name, s.description, params=s.params, keywords=s.keywords,
+                    tags=s.tags, handler=s.handler)
+            for s in specs
+        ]
+        kind = "mcp"
+    elif isinstance(data, list):
+        names = [d if isinstance(d, str) else d.get("name", "") for d in data]
+        raws = tools_from_names([n for n in names if n])
+        kind = "names"
+    else:
+        print("unrecognised input: expected an MCP listing, an OpenAPI doc, or a list of names",
+              file=sys.stderr)
+        return 2
+
+    funnel, doc, report = index_and_dump(
+        raws,
+        similarity_threshold=args.threshold,
+        max_domains=args.max_domains,
+    )
+    out = args.out or "indexed.json"
+    with open(out, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, ensure_ascii=False, indent=1)
+
+    print(f"indexed {kind} source: {report.summary()}")
+    print(f"wrote {out}")
+    print()
+    print("inferred domains (with mined triggers):")
+    for d in doc["domains"]:
+        print(f"  {d['name']:<16} tools={report.domain_sizes.get(d['name'], 0):<4} "
+              f"triggers={', '.join(d['triggers'][:5])}")
+    if args.explain and doc["tools"]:
+        print()
+        print("sample tools (domain / stage):")
+        for t in doc["tools"][:8]:
+            print(f"  {t['name']:<34} {t['domain']:<12} {t['stage']}")
+    print()
+    print(f"route it now:  tool-funnel route {out} \"{args.query}\"")
     return 0
 
 
