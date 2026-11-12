@@ -35,8 +35,23 @@ jobs:
       - name: Run the demo (no API key required)
         run: python examples/demo.py --tools 300
 
+      - name: Run the MCP demo (offline, fake session)
+        run: python examples/mcp_demo.py
+
       - name: Run the benchmark
         run: python benchmarks/bench.py --tools 500 --queries 50 --train-sessions 200
+
+      - name: Exercised the installed CLI entry points
+        run: |
+          python -m toolfunnel.cli demo
+          python -m toolfunnel.cli catalog --tools 200 --out /tmp/cat.json
+          python -m toolfunnel.cli route /tmp/cat.json "查订单"
+
+      - name: Build and smoke-test the standalone zipapp
+        run: |
+          python tools/build_zipapp.py
+          python dist/tool-funnel.pyz --version
+          python dist/tool-funnel.pyz demo
 
   lint:
     runs-on: ubuntu-latest

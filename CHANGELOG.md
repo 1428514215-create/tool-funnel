@@ -4,6 +4,40 @@ All notable changes to this project are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] - 2026-11-12
+
+The "download and use it" release: no functional changes to routing, purely
+distribution and packaging so the project can be consumed without cloning or
+building anything.
+
+### Added
+
+- **Standalone single-file zipapp** — `tools/build_zipapp.py` produces
+  `tool-funnel.pyz`, a zip that runs on any Python 3.8+ interpreter with **no
+  pip, no install and no network**. The archive bundles the package *and* the
+  example catalog, so `python tool-funnel.pyz demo` shows a result immediately.
+- **`python -m toolfunnel`** entry point (`toolfunnel/__main__.py`), equivalent
+  to the installed `tool-funnel` command.
+- **Bundled example catalog as package data** (`toolfunnel/data/`), loaded via
+  `importlib.resources` so it works identically from a source checkout, an
+  installed wheel, and the zipapp (which has no real filesystem paths).
+- **CLI commands** `demo` (self-contained demo on the bundled catalog) and
+  `catalog` (generate a synthetic multi-domain catalog to a compose document).
+- **`install.sh`** — one-step installer/launcher: `--zipapp`, `--venv`, `--user`
+  or plain pip, with a graceful fallback to building the `.pyz` when pip has no
+  network or the environment is externally managed.
+- **Release workflow** (`.github/workflows/release.yml`) — on a version tag,
+  builds the wheel, sdist and zipapp, smoke-tests all three, and attaches them
+  to a GitHub Release so users can download a runnable artifact.
+- **`INSTALL.md`** — the download-and-run guide (three paths, FAQ).
+- Packaging metadata: `MANIFEST.in`, fuller classifiers, `mcp`/`yaml`/`all`
+  extras, project URLs.
+
+### Changed
+
+- CI now also builds and smoke-tests the zipapp and runs the `demo` / `catalog`
+  / MCP demos, so a broken distribution is caught before release.
+
 ## [0.2.0] - 2026-11-11
 
 The "operate at scale" release: everything here is about keeping the funnel

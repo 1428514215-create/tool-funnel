@@ -4,30 +4,42 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tool-funnel"
-version = "0.2.0"
-description = "Funnel-shaped tool router for LLM agents with hundreds of tools: domain/stage routing, call-chain recommendation, argument prefill and online learning."
+version = "0.2.1"
+description = "Funnel-shaped tool router for LLM agents with hundreds or thousands of tools: domain/stage routing, call-chain recommendation, argument prefill, MCP integration and online learning."
 readme = "README.md"
 requires-python = ">=3.8"
 license = { text = "MIT" }
 authors = [{ name = "tool-funnel contributors" }]
 keywords = [
   "llm", "agent", "tool-calling", "function-calling", "tool-selection",
-  "router", "context-engineering", "token-optimization"
+  "router", "context-engineering", "token-optimization", "mcp",
+  "model-context-protocol", "tool-router", "ai-agents",
 ]
 classifiers = [
-  "Development Status :: 3 - Alpha",
+  "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
   "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Topic :: Software Development :: Libraries :: Python Modules",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Typing :: Typed",
 ]
 dependencies = []
 
 [project.optional-dependencies]
 openai = ["openai>=1.0"]
 tiktoken = ["tiktoken>=0.5"]
-dev = ["pytest>=7", "tiktoken>=0.5"]
+yaml = ["PyYAML>=5.4"]
+mcp = ["mcp>=1.0"]
+all = ["openai>=1.0", "tiktoken>=0.5", "PyYAML>=5.4"]
+dev = ["pytest>=7", "PyYAML>=5.4", "tiktoken>=0.5"]
 
 [project.scripts]
 tool-funnel = "toolfunnel.cli:main"
@@ -36,9 +48,13 @@ tool-funnel = "toolfunnel.cli:main"
 Homepage = "https://github.com/your-org/tool-funnel"
 Repository = "https://github.com/your-org/tool-funnel"
 Issues = "https://github.com/your-org/tool-funnel/issues"
+Changelog = "https://github.com/your-org/tool-funnel/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 include = ["toolfunnel*"]
+
+[tool.setuptools.package-data]
+"toolfunnel.data" = ["*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

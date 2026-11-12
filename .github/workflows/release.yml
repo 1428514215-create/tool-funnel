@@ -1,0 +1,81 @@
+name: Release
+
+# Build the distributable artifacts on a version tag and attach them to a
+# GitHub Release, so users can download something runnable without cloning or
+# building anything themselves:
+#
+#   tool_funnel-<v>-py3-none-any.whl   -> pip install
+#   tool_funnel-<v>.tar.gz             -> pip install from source
+#   tool-funnel.pyz                    -> single file, `python tool-funnel.pyz`
+#
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write  # needed to create/update the release
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+
+      - name: Build wheel + sdist
+        run: python -m build
+
+      - name: Build standalone zipapp
+        run: python tools/build_zipapp.py dist/tool-funnel.pyz
+
+      - name: Smoke-test the zipapp
+        run: |
+          python dist/tool-funnel.pyz --version
+          python dist/tool-funnel.pyz demo
+          python dist/tool-funnel.pyz catalog --tools 300 --out /tmp/cat.json
+          python dist/tool-funnel.pyz bench /tmp/cat.json --queries 20
+
+      - name: Smoke-test the wheel
+        run: |
+          python -m venv /tmp/venv
+          /tmp/venv/bin/pip install dist/*.whl
+          /tmp/venv/bin/tool-funnel --version
+          /tmp/venv/bin/tool-funnel demo
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            **pip (recommended)**
+            ```bash
+            pip install tool_funnel-*.whl
+            tool-funnel demo
+            ```
+
+            **Single file, no install** (needs only Python 3.8+)
+            ```bash
+            python tool-funnel.pyz demo
+            ```
+
+            Zero runtime dependencies. See README for the four-layer design and
+            MCP integration.

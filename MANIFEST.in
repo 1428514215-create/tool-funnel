@@ -1,0 +1,24 @@
+# Source distribution completeness.
+#
+# The wheel only needs the importable package (see pyproject package-data); the
+# sdist should carry everything a reader of the repo would expect, so a
+# `pip install tool-funnel` from source can run the examples and benchmarks too.
+include LICENSE
+include README.md
+include CHANGELOG.md
+include CONTRIBUTING.md
+include install.sh
+include pyproject.toml
+
+recursive-include toolfunnel *.json
+recursive-include examples *.py *.json *.md
+recursive-include benchmarks *.py
+recursive-include docs *.md
+recursive-include tools *.py
+recursive-include tests *.py
+recursive-include .github *.yml
+
+# Never ship build/cache noise.
+global-exclude __pycache__/*
+global-exclude *.py[cod]
+global-exclude .DS_Store

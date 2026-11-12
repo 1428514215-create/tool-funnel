@@ -1,5 +1,6 @@
 """Command-line interface for tool-funnel.
 
+    tool-funnel demo                     # self-contained demo on bundled catalog
     tool-funnel stats    FILE.json        # catalog + routing stats
     tool-funnel route    FILE.json "..."  # route one query, show the funnel
     tool-funnel bench    FILE.json        # token-savings benchmark
@@ -15,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from typing import List, Optional
 
@@ -27,6 +29,38 @@ from .types import ToolCall
 
 def _load(path: str) -> Funnel:
     return build_from_dict(load_document(path))
+
+
+def _bundled(*parts: str) -> str:
+    """Path to a file shipped alongside the package (works inside the zipapp).
+
+    The zipapp bundles ``examples/`` at the archive root, which is on
+    ``sys.path`` when the archive runs -- so reconstructing the path from
+    ``sys.path[0]`` finds both the source checkout and the built ``.pyz``.
+    """
+    base = sys.path[0] if sys.path and sys.path[0] else os.getcwd()
+    return os.path.join(base, *parts)
+
+
+def _read_bundled_catalog() -> Optional[dict]:
+    """Load the example catalog packaged inside ``toolfunnel.data``.
+
+    Unlike :func:`_bundled` (a filesystem path), this reads the resource through
+    the import system, so it works identically from a source checkout, an
+    installed wheel, and a ``.pyz`` -- the last of which has no real filesystem
+    paths at all. ``importlib.resources`` is used across the 3.8/3.9+ API split.
+    """
+    try:
+        if sys.version_info >= (3, 9):
+            from importlib.resources import files
+
+            resource = files("toolfunnel.data").joinpath("compose.example.json")
+            return json.loads(resource.read_text(encoding="utf-8"))
+        from importlib.resources import read_text  # pragma: no cover - 3.8 path
+
+        return json.loads(read_text("toolfunnel.data", "compose.example.json"))
+    except Exception:
+        return None
 
 
 def cmd_stats(args: argparse.Namespace) -> int:
@@ -179,6 +213,18 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--namespace", action="store_true")
     s.add_argument("--json", action="store_true", help="emit a compose document")
     s.set_defaults(func=cmd_mcp_import)
+
+    s = sub.add_parser(
+        "demo", help="run a demo on the bundled example catalog (no other files needed)"
+    )
+    s.add_argument("--file", help="catalog to use (default: bundled example)")
+    s.add_argument("--queries", nargs="*", help="queries to route")
+    s.set_defaults(func=cmd_demo)
+
+    s = sub.add_parser("catalog", help="generate a synthetic multi-domain catalog")
+    s.add_argument("--tools", type=int, default=1000)
+    s.add_argument("--out", help="output path (default: catalog.json)")
+    s.set_defaults(func=cmd_catalog)
     return p
 
 
@@ -265,6 +311,93 @@ def cmd_mcp_import(args: argparse.Namespace) -> int:
         for n in names[:3]:
             print(f"    - {n}")
     print("\nre-run with --json to emit a compose document")
+    return 0
+
+
+def cmd_catalog(args: argparse.Namespace) -> int:
+    """Generate a synthetic multi-domain catalog to a compose document.
+
+    Useful for trying the funnel at realistic scale without wiring up real
+    tools: it produces a valid compose document you can immediately feed to
+    ``route`` / ``bench``.
+    """
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from examples.generate_catalog import build_catalog  # type: ignore
+    except Exception:
+        # Inside the zipapp, examples/ is bundled at the archive root.
+        base = sys.path[0] if sys.path else os.getcwd()
+        sys.path.insert(0, os.path.join(base, "examples"))
+        try:
+            from generate_catalog import build_catalog  # type: ignore
+        except Exception:
+            print(
+                "catalog generator not available in this distribution.\n"
+                "Use the source checkout (python examples/generate_catalog.py) "
+                "or write your own compose document.",
+                file=sys.stderr,
+            )
+            return 2
+    doc = build_catalog(args.tools)
+    out = args.out or "catalog.json"
+    with open(out, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, ensure_ascii=False, indent=1)
+    print(f"wrote {out}: {len(doc['tools'])} tools, "
+          f"{len(doc['domains'])} domains, {len(doc['stages'])} stages")
+    print(f"try it:  tool-funnel route {out} \"帮我查一下订单\"")
+    return 0
+
+
+def cmd_demo(args: argparse.Namespace) -> int:
+    """Run a self-contained demo on the bundled catalog (no other files needed).
+
+    This is the "just downloaded it" experience: it loads the catalog packaged
+    with the library and routes a few queries, so a fresh clone, an installed
+    wheel, or a standalone ``.pyz`` shows a real result without the user
+    supplying anything.
+    """
+    if args.file:
+        if not os.path.exists(args.file):
+            print(f"catalog not found: {args.file}", file=sys.stderr)
+            return 2
+        source = args.file
+        funnel = _load(args.file)
+    else:
+        doc = _read_bundled_catalog()
+        if doc is None:
+            # Fall back to the source-tree path (editable checkouts).
+            path = _bundled("examples", "compose.example.json")
+            if not os.path.exists(path):
+                print(
+                    "bundled example catalog could not be loaded.\n"
+                    "Pass --file path/to/catalog.json to use your own.",
+                    file=sys.stderr,
+                )
+                return 2
+            source = path
+            funnel = _load(path)
+        else:
+            source = "packaged example (toolfunnel.data)"
+            funnel = build_from_dict(doc)
+
+    queries = args.queries or [
+        "帮我查一下订单 12345 走到哪了",
+        "客户申请退款，帮我处理一下售后工单",
+    ]
+    print(f"tool-funnel {__version__} -- demo on {source}")
+    print(f"catalog: {len(funnel.registry)} tools, {len(funnel.gate.names)} domains\n")
+    for q in queries:
+        r = funnel.route(q)
+        print(f"> {q}")
+        print(f"  {r.summary()}")
+        for m in r.tools:
+            pre = f"  prefill={m.prefilled}" if m.prefilled else ""
+            print(f"    - {m.name:<22} {m.score:.2f} [{m.reason}]{pre}")
+        print()
+    print("next steps:")
+    print("  tool-funnel bench --file examples/compose.example.json")
+    print("  python -c \"import toolfunnel; help(toolfunnel)\"   # Python API")
+    print("  see README.md for MCP, custom catalogs and the four layers")
     return 0
 
 

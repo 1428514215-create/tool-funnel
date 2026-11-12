@@ -4,7 +4,7 @@
 > 工具定义塞进每一轮对话。先用「业务域 → 阶段」把范围收窄到几个工具，再按
 > 「已调用工具」推荐下一步，并把参数预先填好。**调用越多，链路越准、越快。**
 
-[![tests](https://img.shields.io/badge/tests-107%20passing-brightgreen)](#测试)
+[![tests](https://img.shields.io/badge/tests-114%20passing-brightgreen)](#测试)
 [![python](https://img.shields.io/badge/python-3.8%2B-blue)](pyproject.toml)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![deps](https://img.shields.io/badge/runtime%20deps-0-orange)](#设计原则)
@@ -117,17 +117,48 @@ next-tool top-3 accuracy (held-out sessions):
 
 ---
 
-## 安装
+## 安装：三种方式，任选其一
 
-零运行时依赖，标准库即可跑：
+零运行时依赖，只需 Python 3.8+。完整说明见 [INSTALL.md](INSTALL.md)。
+
+**① 单文件，无需安装（推荐先试试）** —— 从
+[Releases](https://github.com/your-org/tool-funnel/releases) 下载 `tool-funnel.pyz`：
 
 ```bash
-pip install -e .            # 或直接把 toolfunnel/ 拷进你的项目
-pip install -e ".[dev]"     # 跑测试
-pip install -e ".[openai]"  # 想用语义重排（可选）
+python tool-funnel.pyz demo      # 自带示例，直接跑给你看
 ```
 
+不需要 pip、不需要联网、不需要虚拟环境。
+
+**② pip 安装（推荐用于项目集成）**
+
+```bash
+pip install tool_funnel-0.2.1-py3-none-any.whl   # 从 Releases 下载
+# 或：pip install git+https://github.com/your-org/tool-funnel.git
+tool-funnel demo
+```
+
+**③ 克隆源码**
+
+```bash
+git clone https://github.com/your-org/tool-funnel.git && cd tool-funnel
+./install.sh          # 自动装；失败则回退构建 .pyz
+```
+
+可选增强（都不装也能跑）：`tool-funnel[yaml]`、`tool-funnel[openai]`、
+`tool-funnel[mcp]`。
+
 ## 快速开始
+
+先跑一次内置演示看效果（不用写任何代码）：
+
+```bash
+tool-funnel demo
+tool-funnel catalog --tools 1000 --out big.json   # 造一个 1000 工具的目录
+tool-funnel route big.json "客户申请退款"          # 看漏斗怎么收窄
+```
+
+再看 Python API：
 
 ```python
 from toolfunnel import Funnel, ToolSpec, ParamSpec, DomainSpec, SessionContext
@@ -221,14 +252,18 @@ funnel = build_from_dict(load_document("compose.example.json"))
 ### 命令行
 
 ```bash
-tool-funnel stats  compose.example.json       # 目录/业务域统计
-tool-funnel route  compose.example.json "查订单"  # 沿漏斗走一遍，看它怎么选
-tool-funnel bench  compose.example.json        # Token 节省基准
-tool-funnel learn  compose.example.json corpus.json --out learned.json
-tool-funnel discover-stages compose.example.json corpus.json  # 从会话推断阶段
-tool-funnel distill learned.json               # 蒸馏学习状态里的链路图
+tool-funnel demo                               # 内置示例，直接看效果
+tool-funnel catalog --tools 1000 --out c.json  # 生成合成目录
+tool-funnel stats  c.json                       # 目录/业务域统计
+tool-funnel route  c.json "查订单"               # 沿漏斗走一遍，看它怎么选
+tool-funnel bench  c.json                       # Token 节省基准
+tool-funnel learn  c.json corpus.json --out learned.json
+tool-funnel discover-stages c.json corpus.json  # 从会话推断阶段
+tool-funnel distill learned.json                # 蒸馏学习状态里的链路图
 tool-funnel mcp-import listing.json --server ecom  # 展平 MCP list_tools 结果
 ```
+
+未安装时用 `python -m toolfunnel ...` 或 `python tool-funnel.pyz ...` 完全等价。
 
 ### 接入真实 Agent 循环
 
@@ -363,16 +398,22 @@ toolfunnel/
   cache.py       冷启动缓存（索引 + 学习状态落盘）
   adapters.py    OpenAI / Anthropic / 通用 ToolRunner 适配
   compose.py     声明式目录（JSON/YAML/DSL）加载与导出
-  cli.py         命令行入口（stats/route/bench/learn/discover-stages/distill/mcp-import）
+  cli.py         命令行入口（demo/catalog/stats/route/bench/learn/discover-stages/distill/mcp-import）
+  __main__.py    `python -m toolfunnel` 入口
+  data/          随包分发的示例目录（wheel 与 zipapp 都能读到）
+tools/
+  build_zipapp.py  构建单文件 tool-funnel.pyz
 examples/        1000 工具合成目录生成器 + 端到端演示 + MCP 演示
 benchmarks/      Token 节省、链路预测与规模扫描基准
-tests/           107 个单元测试
+tests/           114 个单元测试
+install.sh       一键安装 / 构建 .pyz
+INSTALL.md       下载与安装指南
 ```
 
 ## 测试
 
 ```bash
-python -m pytest -q             # 107 passed
+python -m pytest -q             # 114 passed
 python examples/demo.py         # 端到端演示（无需 API key）
 python examples/mcp_demo.py     # MCP 端到端演示（内置假 session，无需 server）
 python benchmarks/bench.py      # 复现基准数字
@@ -412,6 +453,10 @@ Domains are **not** hard-isolated: bridge tools stay reachable and
 Results at 1000-tool scale: **~99% fewer tool-schema tokens per turn**, sub-ms
 pure-CPU routing, and measurable improvement in next-tool prediction on
 transitions that were never declared in config — only learned from traffic.
+
+**Get it:** download the single-file `tool-funnel.pyz` from Releases and run
+`python tool-funnel.pyz demo` — no pip, no install, no network — or
+`pip install` the wheel. See [INSTALL.md](INSTALL.md).
 
 ```python
 from toolfunnel import Funnel, ToolSpec, DomainSpec
