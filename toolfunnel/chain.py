@@ -35,6 +35,16 @@ __all__ = ["ChainGraph", "ChainEdge", "ChainStep"]
 _DEFAULT_RNG = random.Random()
 _DEFAULT_RNG_MISSING = None
 
+# Strength of a *declared* ``next_hint`` as a prior, before any observation.
+#
+# On the saturating scale an observed edge scores ``n/(n+2)`` after ``n``
+# sightings: 1 -> 0.33, 3 -> 0.60, 5 -> 0.71, many -> ~1.0. A prior of 0.7
+# therefore means a handful of calls (fewer than ~5) cannot dislodge a curated
+# hint, while *sustained* consistent traffic (~5+ sightings of the same edge)
+# legitimately overrides it -- because at that point the traffic is evidence the
+# curated chain was wrong. See ``successors`` for the combination rule.
+_HINT_PRIOR = 0.7
+
 
 def _default_random() -> float:
     return _DEFAULT_RNG.random()
@@ -181,19 +191,27 @@ class ChainGraph:
 
         # Map observed weights onto a bounded 0..1 band with a saturating curve
         # ``w / (w + 2)``: 1 observation -> 0.33, 2 -> 0.5, 4 -> 0.67, many ->
-        # ~1.0. A single observation should not dominate, and declared hints are
-        # floored below so curated knowledge is not erased by early noise.
+        # ~1.0.
         acc = {k: (v[0] / (v[0] + 2.0), v[1], v[2]) for k, v in acc.items()}
 
         for dst in self._seed.get(tool, []):
-            # Keep the stronger of (observed, hint): a hinted edge is never
-            # demoted below 0.6, so it survives until traffic is genuinely
-            # consistent (>= ~5 observations) and takes over on merit.
+            # A declared hint is a *prior*, and observed traffic is *evidence*.
+            # They must reinforce each other, not compete: previously a hint was
+            # only floored at 0.6, so any observed edge past ~4 sightings (0.67)
+            # pushed the curated chain out of the top slot -- learning silently
+            # degraded hand-authored routes. Combining them probabilistically
+            # (``1 - (1-prior)(1-observed)``) means an observed edge can only
+            # displace a hint by being genuinely consistent, and a hinted edge
+            # that is also observed becomes stronger still.
             obs = acc.get(dst)
-            if obs is None:
-                acc[dst] = (0.6, "seed-hint", ())
-            else:
-                acc[dst] = (max(0.6, obs[0]), obs[1] or "seed-hint", obs[2])
+            observed_score = obs[0] if obs else 0.0
+            prior = _HINT_PRIOR
+            combined = 1.0 - (1.0 - prior) * (1.0 - observed_score)
+            acc[dst] = (
+                min(1.0, combined),
+                obs[1] if obs else "seed-hint",
+                obs[2] if obs else (),
+            )
 
         steps = [
             ChainStep(dst, round(w, 4), reason, flow, self._count_of(tool, dst))

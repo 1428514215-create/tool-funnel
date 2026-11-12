@@ -22,8 +22,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from toolfunnel import Funnel, SessionContext  # noqa: E402
-from toolfunnel.learn import Learner  # noqa: E402
-from toolfunnel.types import estimate_tokens  # noqa: E402
+from toolfunnel.learn import Learner, SessionRecord  # noqa: E402
+from toolfunnel.types import ToolCall, estimate_tokens  # noqa: E402
 
 from generate_catalog import build_catalog  # noqa: E402
 
@@ -114,22 +114,64 @@ def demo_expand(funnel: Funnel) -> None:
 
 
 def demo_learning(funnel: Funnel) -> None:
-    header("4. Learning: routing sharpens as sessions accumulate")
-    before = funnel.route("客户要求退货并退款", context=SessionContext())
-    print(f"  before learning: {before.summary()}")
-    print(f"    stage={before.stage} ({before.stage_source})")
+    header("4. Learning: what training actually changes")
+    print("  (token count does NOT move with learning -- it is fixed by the")
+    print("   budget. What moves is whether the NEXT tool is ranked correctly.)\n")
 
-    sessions = Learner.synthetic_sessions(list(funnel.registry), n=400, seed=7)
-    report = Learner(funnel).learn(sessions)
-    print(f"\n  {report.summary()}")
+    # A clean 3-domain scenario with no duplicate tools and one hidden chain, so
+    # the effect is unambiguous. Compare two regimes: a declared prior exists,
+    # vs nothing declared at all.
+    def build(declare):
+        from toolfunnel import DomainSpec, ToolSpec
 
-    after = funnel.route("客户要求退货并退款", context=SessionContext())
-    print(f"\n  after learning:  {after.summary()}")
-    print(f"    stage={after.stage} ({after.stage_source})")
-    print(f"    chain edges: {before.total_tools and len(funnel.chain.edges)}")
-    for e in funnel.chain.top_edges(3):
-        cross = " [cross-domain]" if e.cross_domain else ""
-        print(f"    hot edge: {e.src} -> {e.dst} (w={e.weight:.1f}, n={e.count}){cross}")
+        doms = {
+            "order": ("order.search", "order.get", "order.cancel"),
+            "shipment": ("shipment.list", "shipment.track", "shipment.notify"),
+            "refund": ("refund.create", "refund.status", "refund.close"),
+        }
+        stages = ("locate", "inspect", "mutate")
+        specs = []
+        for d, names in doms.items():
+            for i, nm in enumerate(names):
+                hint = (names[1],) if (declare and i == 0) else ()
+                specs.append(ToolSpec(nm, domain=d, stage=stages[i],
+                                      description=nm.replace(".", " "),
+                                      keywords=(d,), next_hint=hint))
+        return Funnel.from_tools(specs, domains=[DomainSpec(d, triggers=(d,)) for d in doms]), doms
+
+    def sessions(doms, n, seed):
+        import random
+        rng = random.Random(seed)
+        out = []
+        for _ in range(n):
+            d = rng.choice(list(doms))
+            out.append(SessionRecord(query=d,
+                                     calls=[ToolCall(x) for x in doms[d]],
+                                     domains_used=(d,)))
+        return out
+
+    def next_top1(f, sess):
+        hit = n = 0
+        for s in sess:
+            names = [c.tool for c in s.calls]
+            for a, b in zip(names, names[1:]):
+                n += 1
+                if b in [x.tool for x in f.chain.successors(a, limit=1)]:
+                    hit += 1
+        return hit / max(1, n)
+
+    for declare, label in (
+        (True, "with a declared prior (one hop given, rest hidden)"),
+        (False, "with NO declared hints (learned purely from traffic)"),
+    ):
+        f, doms = build(declare)
+        ev = sessions(doms, 100, seed=7)
+        before = next_top1(f, ev)
+        Learner(f).learn(sessions(doms, 400, seed=99))
+        after = next_top1(f, ev)
+        print(f"  {label}")
+        print(f"    next-tool ranked #1:  {before:.0%}  ->  {after:.0%}")
+        print()
 
 
 def demo_tokens(funnel: Funnel, queries) -> None:

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tool-funnel"
-version = "0.3.0"
+version = "0.3.1"
 description = "Funnel-shaped tool router for LLM agents with hundreds or thousands of tools: domain/stage routing, call-chain recommendation, argument prefill, MCP integration and online learning."
 readme = "README.md"
 requires-python = ">=3.8"

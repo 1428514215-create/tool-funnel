@@ -175,6 +175,52 @@ def test_success_rate_tracked():
     assert 0.0 < edge.rate() < 1.0
 
 
+def test_declared_hint_not_displaced_by_a_few_observations():
+    """A curated hint must survive early noise, but yield to sustained traffic.
+
+    The spec is deliberately two-sided: a *handful* of calls must not erase a
+    curated route (that was the bug -- learning silently degrading hand-authored
+    chains), yet *sustained, consistent* traffic must be able to override it,
+    because at that point the traffic is evidence the curated route was wrong.
+    """
+    # A few sightings of a competing edge: the curated hint still wins.
+    g = ChainGraph()
+    g.seed("a", ["curated"])
+    for _ in range(2):
+        g.observe_pair(ToolCall("a"), ToolCall("noise"))
+    assert [s.tool for s in g.successors("a", limit=1)] == ["curated"]
+
+    # Sustained traffic for the competing edge: it legitimately takes over.
+    g2 = ChainGraph()
+    g2.seed("a", ["curated"])
+    for _ in range(30):
+        g2.observe_pair(ToolCall("a"), ToolCall("noise"))
+    assert [s.tool for s in g2.successors("a", limit=1)] == ["noise"]
+
+
+def test_hint_and_observation_compound():
+    """Observing a hinted edge should strengthen, not merely preserve, it."""
+    g1 = ChainGraph()
+    g1.seed("a", ["b"])
+    only_hint = g1.successors("a", limit=1)[0].score
+
+    g2 = ChainGraph()
+    g2.seed("a", ["b"])
+    for _ in range(10):
+        g2.observe_pair(ToolCall("a"), ToolCall("b"))
+    hinted_and_observed = g2.successors("a", limit=1)[0].score
+    assert hinted_and_observed >= only_hint
+
+
+def test_emergent_chain_learned_without_any_hint():
+    """With no hint declared, traffic alone should surface the edge."""
+    g = ChainGraph()
+    assert g.successors("a", limit=1) == []
+    for _ in range(5):
+        g.observe_pair(ToolCall("a"), ToolCall("b"))
+    assert g.successors("a", limit=1)[0].tool == "b"
+
+
 # --------------------------------------------------------------------------- #
 # T2 cache
 # --------------------------------------------------------------------------- #

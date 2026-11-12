@@ -4,6 +4,40 @@ All notable changes to this project are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] - 2026-11-12
+
+Honesty + correctness pass on the learning story.
+
+The old benchmark printed a single before/after table whose two rows were
+identical, which made it look like training did nothing. It did not: **cost** is
+set by the budget and does not move with learning, while **learning** changes
+*which* tools rank and whether the next tool is predicted. Conflating the two was
+a reporting bug, and there was a real bug behind one of the numbers too.
+
+### Fixed
+
+- **Declared chain hints were being displaced by observations.** A curated
+  ``next_hint`` was only floored at a fixed score, so a handful of sightings of a
+  competing edge pushed the hand-authored route out of the top slot -- training
+  silently degraded curated config. Priors and evidence are now combined
+  multiplicatively (``1 - (1-prior)(1-observed)``, ``prior = 0.7``): a *few* calls
+  cannot dislodge a curated hint, but *sustained* consistent traffic can, which
+  is the correct behaviour in both directions. Covered by new two-sided tests.
+
+### Changed
+
+- **`bench.py` rewritten** to report two independent sections:
+  - **A. Cost** (tokens/tools/latency), explicitly labelled as *not* affected by
+    learning; and
+  - **B. Learning**, reported on a **clean scenario with no duplicate tools** so
+    the effect is unambiguous — next-tool ranked #1 goes 50%→100% with a prior
+    present, and 0%→100% with nothing declared at all — plus a large-corpus
+    held-out panel that splits *declared* from *emergent* transitions, with the
+    near-duplicate-tool artefact called out rather than hidden.
+- `examples/demo.py` learning section now demonstrates the metric that actually
+  moves (next-tool ranking) instead of restating the token count, and states
+  plainly that the token count is budget-determined.
+
 ## [0.3.0] - 2026-11-12
 
 The "drop in your tools and go" release: an **auto-indexer** that turns a raw

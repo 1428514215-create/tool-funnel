@@ -4,7 +4,7 @@
 > 工具定义塞进每一轮对话。先用「业务域 → 阶段」把范围收窄到几个工具，再按
 > 「已调用工具」推荐下一步，并把参数预先填好。**调用越多，链路越准、越快。**
 
-[![tests](https://img.shields.io/badge/tests-136%20passing-brightgreen)](#测试)
+[![tests](https://img.shields.io/badge/tests-139%20passing-brightgreen)](#测试)
 [![python](https://img.shields.io/badge/python-3.8%2B-blue)](pyproject.toml)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![deps](https://img.shields.io/badge/runtime%20deps-0-orange)](#设计原则)
@@ -99,29 +99,46 @@ schema 都发给模型。这带来三重代价：
 
 ## 效果（可复现）
 
-`python benchmarks/bench.py` 在 1000 个工具的真实规模合成目录上：
+`python benchmarks/bench.py` 把**两件不同的事**分开报，因为它们动的原因不同，
+混在一张 before/after 表里会让人误以为「学习没用」：
 
 ```
-catalog: 1000 tools | 55142 schema tokens if sent whole | 150 queries
---------------------------------------------------------------------------------
-phase             tools surfaced  tok/turn  tok/full    saved  top1 dom   p50 ms
---------------------------------------------------------------------------------
-before learn       1000     9.0       504     55142    99.1%    84.5%     ~1-3
-after  learn       1000     9.0       504     55142    99.1%    84.5%     ~1-3
---------------------------------------------------------------------------------
-next-tool top-3 accuracy (held-out sessions):
-  declared transitions  (n= 57): 100.0% ->  86.0%
-  emergent transitions  (n= 95):   0.0% ->  33.7%   <- only learnable from observed traffic
+==============================================================================
+  tool-funnel benchmark
+==============================================================================
+  catalog: 1000 tools | 55142 schema tokens sent whole | 165 queries
+
+  A. COST per turn  (set by the budget -- learning does not move this)
+  ------------------------------------------------------------------
+    tools surfaced : 9.0 of 1000
+    schema tokens  : 504 vs 55142 -> 99.1% saved
+    top-1 domain   : 84.5%
+    routing latency: p50 0.98 ms, p95 1.16 ms (pure CPU)
+
+  B1. LEARNING -- clean scenario, no duplicate tools
+      (the actually-used next tool ranked #1, before vs after training)
+  ------------------------------------------------------------------
+    prior existed (one hop declared, rest hidden)      50% ->  100%
+    nothing declared (learned entirely from traffic)    0% ->  100%
+
+  B2. LEARNING -- large corpus, held-out sessions (top-3)
+    declared transitions (n=  57) :  100% ->   96%
+    emergent transitions (n=  95) :    0% ->   26%   <- only learnable from traffic
 ```
 
-- **每轮工具 schema token 下降 ~99%**（55k → 约 500）。
-- **纯 CPU 路由，单次毫秒级**（本机 1000 工具下 p50 约 1–3 ms，随机器而定），
-  不额外调用模型。
-- **经验积累看得见**：那些「没有写在配置里、只能从真实调用里学出来」的跨域
-  链路（emergent transitions），从 0% 提升到 ~34%。
+- **A（成本）**：每轮工具 schema token 下降 ~99%（55k → 约 500），纯 CPU 路由
+  亚毫秒～毫秒级。**这一栏不随训练变化**——它由「预算」和「索引质量」决定，
+  报告里也这么写，不再暗示它会变。
+- **B（学习收益）**：训练真正改变的是**下一个工具排在第几位**。
+  - **B1 干净场景**（无重复工具）：给了策划先验时 50%→**100%**（学习补全了
+    只声明了第一步的链路）；**完全不给任何提示**时 0%→**100%**（纯靠流量学会）。
+  - **B2 大规模语料**：那些**配置里没写、只能从流量学出来**的链路（emergent）
+    从 0% 提升到 ~26%；declared 那一栏的小幅波动来自合成目录里「同义重复工具」
+    （`query_report`/`query_看板`/`query_指标`），真实目录没有这个问题——B1 里
+    就能看到干净的上升。
 
-> 数字随目录/查询集不同而变，但量级一致：**工具越多，漏斗省得越多，而漏斗
-> 自身的开销几乎不变。**
+> 一句话：**A 看省了多少 token，B 看训练补上了什么。二者互不影响——A 由预算
+> 决定，B 由积累的流量决定。**
 
 ---
 
@@ -463,7 +480,7 @@ tools/
   build_zipapp.py  构建单文件 tool-funnel.pyz
 examples/        1000 工具合成目录生成器 + 端到端演示 + MCP 演示 + 自动索引演示
 benchmarks/      Token 节省、链路预测与规模扫描基准
-tests/           136 个单元测试
+tests/           139 个单元测试
 install.sh       一键安装 / 构建 .pyz
 INSTALL.md       下载与安装指南
 ```
@@ -471,7 +488,7 @@ INSTALL.md       下载与安装指南
 ## 测试
 
 ```bash
-python -m pytest -q             # 136 passed
+python -m pytest -q             # 139 passed
 python examples/demo.py         # 端到端演示（无需 API key）
 python examples/mcp_demo.py     # MCP 端到端演示（内置假 session，无需 server）
 python benchmarks/bench.py      # 复现基准数字
