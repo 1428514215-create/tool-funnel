@@ -8,11 +8,22 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Python 3.8 is no longer available on ubuntu-latest (24.04/26.04), so the
+    # oldest supported interpreter is pinned to the last image that still ships
+    # it. Newer versions run on the default image.
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.8", "3.10", "3.12"]
+        include:
+          - python-version: "3.8"
+            os: ubuntu-22.04
+          - python-version: "3.10"
+            os: ubuntu-latest
+          - python-version: "3.12"
+            os: ubuntu-latest
+          - python-version: "3.13"
+            os: ubuntu-latest
+    runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v4
@@ -41,7 +52,7 @@ jobs:
       - name: Run the benchmark
         run: python benchmarks/bench.py --tools 500 --queries 50 --train-sessions 200
 
-      - name: Exercised the installed CLI entry points
+      - name: Exercise the installed CLI entry points
         run: |
           python -m toolfunnel.cli demo
           python -m toolfunnel.cli catalog --tools 200 --out /tmp/cat.json
@@ -52,6 +63,8 @@ jobs:
           python tools/build_zipapp.py
           python dist/tool-funnel.pyz --version
           python dist/tool-funnel.pyz demo
+          python dist/tool-funnel.pyz catalog --tools 300 --out /tmp/cat2.json
+          python dist/tool-funnel.pyz bench /tmp/cat2.json --queries 20
 
   lint:
     runs-on: ubuntu-latest
@@ -62,4 +75,4 @@ jobs:
           python-version: "3.12"
       - run: pip install ruff
       - name: Ruff check
-        run: ruff check toolfunnel tests examples benchmarks --select E9,F63,F7,F82,F401,F811,F841 || true
+        run: ruff check toolfunnel tests examples benchmarks tools --select E9,F63,F7,F82,F401,F811,F841
