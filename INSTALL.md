@@ -6,7 +6,7 @@
 
 ## 方式 1：单文件（最简单，无需安装）
 
-从 [Releases](https://github.com/your-org/tool-funnel/releases) 下载
+从 [Releases](https://github.com/1428514215-create/tool-funnel/releases) 下载
 `tool-funnel.pyz`，然后用任意 Python 3.8+ 解释器直接运行：
 
 ```bash
@@ -28,7 +28,7 @@ python tool-funnel.pyz bench catalog.json        # token 节省基准
 ```bash
 pip install tool_funnel-0.2.1-py3-none-any.whl    # 从 Releases 下载 wheel
 # 或直接从源码
-pip install git+https://github.com/your-org/tool-funnel.git
+pip install git+https://github.com/1428514215-create/tool-funnel.git
 ```
 
 装好后有 `tool-funnel` 命令行，也能 `import toolfunnel`：
@@ -51,7 +51,7 @@ pip install "tool-funnel[mcp]"       # 官方 MCP 客户端（适配器本身不
 ## 方式 3：克隆源码（想改代码或跑测试）
 
 ```bash
-git clone https://github.com/your-org/tool-funnel.git
+git clone https://github.com/1428514215-create/tool-funnel.git
 cd tool-funnel
 ./install.sh              # 自动选择：pip 装；失败则回退构建 .pyz
 # 或

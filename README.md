@@ -122,7 +122,7 @@ next-tool top-3 accuracy (held-out sessions):
 零运行时依赖，只需 Python 3.8+。完整说明见 [INSTALL.md](INSTALL.md)。
 
 **① 单文件，无需安装（推荐先试试）** —— 从
-[Releases](https://github.com/your-org/tool-funnel/releases) 下载 `tool-funnel.pyz`：
+[Releases](https://github.com/1428514215-create/tool-funnel/releases) 下载 `tool-funnel.pyz`：
 
 ```bash
 python tool-funnel.pyz demo      # 自带示例，直接跑给你看
@@ -134,14 +134,14 @@ python tool-funnel.pyz demo      # 自带示例，直接跑给你看
 
 ```bash
 pip install tool_funnel-0.2.1-py3-none-any.whl   # 从 Releases 下载
-# 或：pip install git+https://github.com/your-org/tool-funnel.git
+# 或：pip install git+https://github.com/1428514215-create/tool-funnel.git
 tool-funnel demo
 ```
 
 **③ 克隆源码**
 
 ```bash
-git clone https://github.com/your-org/tool-funnel.git && cd tool-funnel
+git clone https://github.com/1428514215-create/tool-funnel.git && cd tool-funnel
 ./install.sh          # 自动装；失败则回退构建 .pyz
 ```
 

@@ -45,10 +45,10 @@ dev = ["pytest>=7", "PyYAML>=5.4", "tiktoken>=0.5"]
 tool-funnel = "toolfunnel.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/your-org/tool-funnel"
-Repository = "https://github.com/your-org/tool-funnel"
-Issues = "https://github.com/your-org/tool-funnel/issues"
-Changelog = "https://github.com/your-org/tool-funnel/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/1428514215-create/tool-funnel"
+Repository = "https://github.com/1428514215-create/tool-funnel"
+Issues = "https://github.com/1428514215-create/tool-funnel/issues"
+Changelog = "https://github.com/1428514215-create/tool-funnel/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 include = ["toolfunnel*"]
